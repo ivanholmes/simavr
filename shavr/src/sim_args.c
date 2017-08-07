@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <libgen.h>
 
 #include "sim_avr.h"
 #include "sim_elf.h"
@@ -31,6 +32,7 @@
 #include "sim_vcd_file.h"
 
 #include "sim_core_decl.h"
+#include "sim_args.h"
 
 void
 sim_args_display_usage(
@@ -65,22 +67,6 @@ sim_args_list_cores()
 	}
 }
 
-typedef struct sim_args_t {
-	elf_firmware_t f;	// ELF firmware
-	uint32_t f_cpu;	// AVR core frequency
-	char name[24];	// AVR core name
-	uint32_t trace : 1, gdb : 1,  log : 4;
-
-	uint8_t trace_vectors[8];
-	int trace_vectors_count;
-
-	const char vcd_input[1024];
-} sim_args_t;
-
-typedef int (*sim_args_parse_t)(
-	sim_args_t *a,
-	int argc,
-	char *argv[]);
 
 int
 sim_args_parse(
@@ -89,6 +75,103 @@ sim_args_parse(
 	char *argv[],
 	sim_args_parse_t passthru)
 {
+	uint32_t loadBase = AVR_SEGMENT_OFFSET_FLASH;
+
+	memset(a, 0, sizeof(*a));
+
+	if (argc == 1)
+		sim_args_display_usage(basename(argv[0]));
+
+	for (int pi = 1; pi < argc; pi++) {
+		if (!strcmp(argv[pi], "--list-cores")) {
+			sim_args_list_cores();
+		} else if (!strcmp(argv[pi], "-h") || !strcmp(argv[pi], "--help")) {
+			sim_args_display_usage(basename(argv[0]));
+		} else if (!strcmp(argv[pi], "-m") || !strcmp(argv[pi], "--mcu")) {
+			if (pi < argc-1)
+				strncpy(a->name, argv[++pi], sizeof(a->name));
+			else
+				sim_args_display_usage(basename(argv[0]));
+		} else if (!strcmp(argv[pi], "-f") || !strcmp(argv[pi], "--freq")) {
+			if (pi < argc-1)
+				a->f_cpu = atoi(argv[++pi]);
+			else
+				sim_args_display_usage(basename(argv[0]));
+		} else if (!strcmp(argv[pi], "-i") || !strcmp(argv[pi], "--input")) {
+			if (pi < argc-1)
+				strncpy(a->vcd_input, argv[++pi], sizeof(a->vcd_input));
+			else
+				sim_args_display_usage(basename(argv[0]));
+		} else if (!strcmp(argv[pi], "-t") || !strcmp(argv[pi], "--trace")) {
+			a->trace++;
+		} else if (!strcmp(argv[pi], "-ti")) {
+			if (pi < argc-1)
+				a->trace_vectors[a->trace_vectors_count++] = atoi(argv[++pi]);
+		} else if (!strcmp(argv[pi], "-g") || !strcmp(argv[pi], "--gdb")) {
+			a->gdb++;
+		} else if (!strcmp(argv[pi], "-v")) {
+			a->log++;
+		} else if (!strcmp(argv[pi], "-ee")) {
+			loadBase = AVR_SEGMENT_OFFSET_EEPROM;
+		} else if (!strcmp(argv[pi], "-ff")) {
+			loadBase = AVR_SEGMENT_OFFSET_FLASH;
+		} else if (argv[pi][0] == '-') {
+			// call the passthru callback
+			int npi = passthru(a, argc, argv, pi);
+			if (npi < 0)
+				return npi;
+			if (npi > pi)
+				pi = npi;
+		} else if (argv[pi][0] != '-') {
+			char * filename = argv[pi];
+			char * suffix = strrchr(filename, '.');
+			if (suffix && !strcasecmp(suffix, ".hex")) {
+				if (!a->name[0] || !a->f_cpu) {
+					fprintf(stderr,
+							"%s: -mcu and -freq are mandatory to load .hex files\n",
+							argv[0]);
+					return -1;
+				}
+				ihex_chunk_p chunk = NULL;
+				int cnt = read_ihex_chunks(filename, &chunk);
+				if (cnt <= 0) {
+					fprintf(stderr, "%s: Unable to load IHEX file %s\n",
+						argv[0], argv[pi]);
+					return -1;
+				}
+				if (a->log)
+					printf("Loaded %d section of ihex\n", cnt);
+				for (int ci = 0; ci < cnt; ci++) {
+					if (chunk[ci].baseaddr < (1*1024*1024)) {
+						a->f.flash = chunk[ci].data;
+						a->f.flashsize = chunk[ci].size;
+						a->f.flashbase = chunk[ci].baseaddr;
+						if (a->log)
+							printf("Load HEX flash %08x, %d\n", a->f.flashbase, a->f.flashsize);
+					} else if (chunk[ci].baseaddr >= AVR_SEGMENT_OFFSET_EEPROM ||
+							chunk[ci].baseaddr + loadBase >= AVR_SEGMENT_OFFSET_EEPROM) {
+						// eeprom!
+						a->f.eeprom = chunk[ci].data;
+						a->f.eesize = chunk[ci].size;
+						if (a->log)
+							printf("Load HEX eeprom %08x, %d\n", chunk[ci].baseaddr, a->f.eesize);
+					}
+				}
+			} else {
+				if (elf_read_firmware(filename, &a->f) == -1) {
+					fprintf(stderr, "%s: Unable to load firmware from file %s\n",
+							argv[0], filename);
+					return -1;
+				}
+			}
+		}
+	}
+
+	if (strlen(a->name))
+		strcpy(a->f.mmcu, a->name);
+	if (a->f_cpu)
+		a->f.frequency = a->f_cpu;
+
 	return 0;
 }
 

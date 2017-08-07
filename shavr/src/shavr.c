@@ -37,6 +37,8 @@
 #include "uart_pty.h"
 #include "sim_vcd_file.h"
 
+#include "sim_args.h"
+
 uart_pty_t uart_pty;
 avr_t * avr = NULL;
 avr_vcd_t vcd_file;

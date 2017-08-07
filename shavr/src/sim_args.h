@@ -24,6 +24,33 @@
 
 #include <stdint.h>
 
+struct sim_args_t;
+
+typedef int (*sim_args_parse_t)(
+	struct sim_args_t *a,
+	int argc,
+	char *argv[],
+	int index );
+
+typedef struct sim_args_t {
+	elf_firmware_t f;	// ELF firmware
+	uint32_t f_cpu;	// AVR core frequency
+	char name[24];	// AVR core name
+	uint32_t trace : 4, gdb : 1,  log : 4;
+
+	uint8_t trace_vectors[8];
+	int trace_vectors_count;
+
+	char vcd_input[1024];
+} sim_args_t;
+
+int
+sim_args_parse(
+	sim_args_t *a,
+	int argc,
+	char *argv[],
+	sim_args_parse_t passthru);
+
 void
 sim_args_display_usage(
 	const char * app);
